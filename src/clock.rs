@@ -1,17 +1,14 @@
-use std::num::NonZeroU32;
-
 use fxhash::FxHashMap;
 
 pub type Seq = i32;
-pub type Lamport = NonZeroU32;
+pub type Lamport = u32;
 pub type Peer = u64;
-pub type ColId = u32;
 pub type RowId = u64;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct OpId {
-    peer: Peer,
-    lamport: Lamport,
+    pub lamport: Lamport,
+    pub peer: Peer,
 }
 
 #[derive(Debug, Clone)]

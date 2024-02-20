@@ -7,21 +7,30 @@
 //! - Does not support custom ordering of rows or columns
 //! - Small overhead per row
 
-use clock::{ColId, RowId, VersionVector};
+use clock::{Peer, RowId, VersionVector};
 use event::Event;
-use oplog::{Op, OpLog};
+use fxhash::FxHashMap;
+use oplog::OpLog;
+use peer_pool::PeerPool;
 use smol_str::SmolStr;
-use table::{Row, Table};
+use str::{AnyStr, ColStr, StrPool};
+use table::Table;
 
-mod clock;
+pub(crate) mod clock;
 mod event;
 mod oplog;
-mod table;
-mod value;
+mod peer_pool;
+mod str;
+pub(crate) mod table;
+pub(crate) mod value;
 
 #[derive(Debug, Clone)]
 pub struct LwwTable {
-    table: Table,
+    peer: Peer,
+    peer_pools: PeerPool,
+    str_pool: StrPool,
+    col_pool: StrPool<ColStr>,
+    tables: FxHashMap<SmolStr, Table>,
     oplog: OpLog,
 }
 
@@ -42,10 +51,6 @@ impl LwwTable {
         todo!()
     }
 
-    pub fn insert_col(&mut self, name: &str) -> ColId {
-        todo!()
-    }
-
     pub fn delete_col(&mut self, col: &str) {
         todo!()
     }
@@ -55,10 +60,6 @@ impl LwwTable {
     }
 
     pub fn to_json(&self) -> serde_json::Value {
-        todo!()
-    }
-
-    pub fn get_row(&self, row_id: u64) -> Option<&Row> {
         todo!()
     }
 

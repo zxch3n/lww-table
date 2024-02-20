@@ -4,4 +4,5 @@ use smol_str::SmolStr;
 pub enum Value {
     Double(f64),
     Str(SmolStr),
+    Null,
 }

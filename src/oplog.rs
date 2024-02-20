@@ -1,34 +1,14 @@
+use std::collections::BTreeMap;
+
 use fxhash::FxHashMap;
 
 use crate::{
-    clock::{ColId, Lamport, OpId, Peer, RowId},
-    value::Value,
+    clock::{Lamport, OpId, Peer, RowId},
+    str::StrIndex,
 };
 
 #[derive(Debug, Clone)]
 pub(crate) struct OpLog {
-    map: FxHashMap<Peer, Vec<Op>>,
+    map: FxHashMap<Peer, BTreeMap<OpId, RowId>>,
     max_lamport: Lamport,
-}
-
-#[derive(Debug, Clone)]
-pub struct Op {
-    id: OpId,
-    content: OpContent,
-}
-
-#[derive(Debug, Clone)]
-pub enum OpContent {
-    InsertRow {
-        row_id: RowId,
-        partial_data: FxHashMap<ColId, Value>,
-    },
-    InsertCol {
-        col_id: ColId,
-        name: String,
-    },
-    UpdateRow {
-        row_id: RowId,
-        partial_data: FxHashMap<ColId, Value>,
-    },
 }
