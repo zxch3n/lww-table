@@ -1,4 +1,6 @@
+mod bool_rle;
 mod delta_rle;
+mod table_snapshot;
 use itertools::izip;
 
 use std::{
@@ -17,7 +19,10 @@ use crate::{
     LwwDb,
 };
 
-use self::delta_rle::DeltaRleDecoder;
+use self::{
+    delta_rle::DeltaRleDecoder,
+    table_snapshot::{decode_snapshot, encode_snapshot},
+};
 
 #[derive(Serialize, Deserialize)]
 struct Final<'a> {
@@ -35,6 +40,20 @@ struct Final<'a> {
     peer_idx: Cow<'a, [u8]>,
     #[serde(borrow)]
     lamport: Cow<'a, [u8]>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct EncodedSnapshot<'a> {
+    peers: Vec<Peer>,
+    #[serde(borrow)]
+    tables: Vec<EncodedTable<'a>>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct EncodedTable<'a> {
+    str: SmolStr,
+    #[serde(borrow)]
+    table: Cow<'a, [u8]>,
 }
 
 struct EncodedOp {
@@ -59,7 +78,7 @@ impl<T: Hash + Eq + Clone> Register<T> {
         }
     }
 
-    fn get_id<Q: ?Sized>(&mut self, value: &Q) -> usize
+    fn register<Q: ?Sized>(&mut self, value: &Q) -> usize
     where
         T: Borrow<Q>,
         Q: Hash + Eq + ToOwned<Owned = T>,
@@ -97,11 +116,11 @@ impl LwwDb {
                             for (col, value) in row.map.iter() {
                                 if !from.includes(value.id) {
                                     ans.push(EncodedOp {
-                                        table: str_pool.get_id(table_name),
-                                        row: Some(str_pool.get_id(row_name)),
-                                        col: Some(str_pool.get_id(col)),
+                                        table: str_pool.register(table_name),
+                                        row: Some(str_pool.register(row_name)),
+                                        col: Some(str_pool.register(col)),
                                         value: value.value.clone(),
-                                        peer_idx: peer_pool.get_id(&value.id.peer),
+                                        peer_idx: peer_pool.register(&value.id.peer),
                                         lamport: value.id.lamport,
                                     });
                                 }
@@ -110,19 +129,19 @@ impl LwwDb {
                     }
                 }
                 crate::oplog::Op::DeleteTable { table } => ans.push(EncodedOp {
-                    table: str_pool.get_id(table),
+                    table: str_pool.register(table),
                     row: None,
                     col: None,
                     value: Value::Deleted,
-                    peer_idx: peer_pool.get_id(&id.peer),
+                    peer_idx: peer_pool.register(&id.peer),
                     lamport: id.lamport,
                 }),
                 crate::oplog::Op::DeleteRow { table, row } => ans.push(EncodedOp {
-                    table: str_pool.get_id(table),
-                    row: Some(str_pool.get_id(row)),
+                    table: str_pool.register(table),
+                    row: Some(str_pool.register(row)),
                     col: None,
                     value: Value::Deleted,
-                    peer_idx: peer_pool.get_id(&id.peer),
+                    peer_idx: peer_pool.register(&id.peer),
                     lamport: id.lamport,
                 }),
             }
@@ -199,6 +218,46 @@ impl LwwDb {
         }
     }
 
+    pub fn export_snapshot(&self) -> Vec<u8> {
+        let mut ans: Vec<EncodedTable> = Vec::new();
+        let mut peer_pool: Register<Peer> = Register::new();
+        for (name, table) in self.iter_tables() {
+            ans.push(EncodedTable {
+                str: name.clone(),
+                table: Cow::Owned(encode_snapshot(table, &mut peer_pool)),
+            })
+        }
+
+        let encoded = EncodedSnapshot {
+            peers: peer_pool.finish(),
+            tables: ans,
+        };
+
+        postcard::to_allocvec(&encoded).unwrap()
+    }
+
+    pub fn from_snapshot(data: &[u8]) -> Self {
+        let encoded: EncodedSnapshot = postcard::from_bytes(data).unwrap();
+        let mut db = LwwDb::new();
+        for table in encoded.tables {
+            let v = decode_snapshot(&table.table, &encoded.peers, |c| match c {
+                table_snapshot::Change::DelTable { id } => {
+                    db.oplog.record_delete_table(id, table.str.clone());
+                }
+                table_snapshot::Change::DelRow { row, id } => {
+                    db.oplog
+                        .record_delete_row(id, table.str.clone(), row.clone());
+                }
+                table_snapshot::Change::Value { row, id } => {
+                    db.oplog.record_update(id, table.str.clone(), row.clone());
+                }
+            });
+            db.tables.insert(table.str, v);
+        }
+
+        db
+    }
+
     fn apply_op(
         &mut self,
         id: OpId,
@@ -235,10 +294,10 @@ mod test_encode_from {
         let data = db.export_updates(Default::default());
         let mut new_db = LwwDb::new();
         new_db.import_updates(&data);
-        assert!(db.check_eq(&new_db));
+        assert!(db.table_eq(&new_db));
         let mut c_db = LwwDb::new();
         c_db.import_updates(&new_db.export_updates(Default::default()));
-        assert!(db.check_eq(&c_db));
+        assert!(db.table_eq(&c_db));
     }
 
     #[test]
@@ -258,9 +317,26 @@ mod test_encode_from {
         println!("{}", &new_db);
         dbg!(&db);
         dbg!(&new_db);
-        assert!(db.check_eq(&new_db));
+        assert!(db.table_eq(&new_db));
         let mut c_db = LwwDb::new();
         c_db.import_updates(&new_db.export_updates(Default::default()));
-        assert!(db.check_eq(&c_db));
+        assert!(db.table_eq(&c_db));
+    }
+
+    #[test]
+    fn test_snapshot_basic() {
+        let mut db = LwwDb::new();
+        db.set_("table", "a", "b", "value", None);
+        db.set_("table", "a", "c", "value", None);
+        db.set_("table", "a", "a", 123.0, None);
+        db.set_("table", "b", "a", 124.0, None);
+        db.set_("meta", "meta", "name", "Bob", None);
+        db.set_("meta", "meta", "Date", "2024/02/21", None);
+        let data = db.export_snapshot();
+        let new_db = LwwDb::from_snapshot(&data);
+        assert!(db.table_eq(&new_db));
+        let mut c_db = LwwDb::new();
+        c_db.import_updates(&new_db.export_updates(Default::default()));
+        assert!(db.table_eq(&c_db));
     }
 }

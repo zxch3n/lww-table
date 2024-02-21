@@ -19,8 +19,8 @@ pub struct LwwTable {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Col {
-    name: Arc<str>,
-    num: usize,
+    pub name: Arc<str>,
+    pub num: usize,
 }
 
 impl Col {
@@ -40,7 +40,7 @@ pub struct Row {
     /// We use Arc<str> to reduce memory usage
     pub(crate) map: FxHashMap<SmolStr, ValueAndClock>,
     /// If this is Some, the content of the row can only contain values that inserted after the given OpId
-    cleared_at: Option<OpId>,
+    pub(crate) cleared_at: Option<OpId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

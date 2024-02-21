@@ -67,8 +67,7 @@ impl LwwDb {
         self.peer = peer;
     }
 
-    #[allow(unused)]
-    pub(crate) fn check_eq(&self, other: &Self) -> bool {
+    pub fn table_eq(&self, other: &Self) -> bool {
         self.tables == other.tables
     }
 
@@ -174,14 +173,6 @@ impl LwwDb {
 
     pub fn create_table(&mut self, name: &str) {
         self.tables.insert(name.into(), LwwTable::new());
-    }
-
-    pub fn import_snapshot(&mut self, _data: &[u8]) {
-        todo!()
-    }
-
-    pub fn export_snapshot(&self) -> Vec<u8> {
-        todo!()
     }
 
     pub fn subscribe(&mut self, _listener: Box<dyn Fn(&Event)>) {

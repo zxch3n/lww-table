@@ -1,11 +1,12 @@
 use std::ops::{Deref, DerefMut};
 
 use fxhash::FxHashMap;
+use serde::{Deserialize, Serialize};
 
 pub type Lamport = u32;
 pub type Peer = u64;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct OpId {
     pub lamport: Lamport,
     pub peer: Peer,
