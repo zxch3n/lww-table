@@ -209,32 +209,58 @@ impl LwwDb {
     ) {
         match value {
             Value::Deleted => match (row, col) {
-                (None, None) => self.delete_table(table, Some(id)),
-                (Some(row), None) => self.delete_row(table, row, Some(id)),
-                (Some(row), Some(col)) => self.set(table, row, col, value, Some(id)),
+                (None, None) => self.delete_table_(table, Some(id)),
+                (Some(row), None) => self.delete_row_(table, row, Some(id)),
+                (Some(row), Some(col)) => self.set_(table, row, col, value, Some(id)),
                 (None, Some(_)) => unreachable!(),
             },
-            _ => self.set(table, row.unwrap(), col.unwrap(), value, Some(id)),
+            _ => self.set_(table, row.unwrap(), col.unwrap(), value, Some(id)),
         }
     }
 }
 
 #[cfg(test)]
-mod test {
+mod test_encode_from {
     use super::*;
 
     #[test]
-    fn test() {
+    fn test_basic() {
         let mut db = LwwDb::new();
-        db.set("table", "a", "b", "value", None);
-        db.set("table", "a", "c", "value", None);
-        db.set("table", "a", "a", 123.0, None);
-        db.set("table", "b", "a", 124.0, None);
-        db.set("meta", "meta", "name", "Bob", None);
-        db.set("meta", "meta", "Date", "2024/02/21", None);
+        db.set_("table", "a", "b", "value", None);
+        db.set_("table", "a", "c", "value", None);
+        db.set_("table", "a", "a", 123.0, None);
+        db.set_("table", "b", "a", 124.0, None);
+        db.set_("meta", "meta", "name", "Bob", None);
+        db.set_("meta", "meta", "Date", "2024/02/21", None);
         let data = db.export_updates(Default::default());
         let mut new_db = LwwDb::new();
         new_db.import_updates(&data);
         assert!(db.check_eq(&new_db));
+        let mut c_db = LwwDb::new();
+        c_db.import_updates(&new_db.export_updates(Default::default()));
+        assert!(db.check_eq(&c_db));
+    }
+
+    #[test]
+    fn test_delete() {
+        let mut db = LwwDb::new();
+        db.set("table", "a", "b", "value");
+        db.set("table", "a", "c", "value");
+        db.delete_row("table", "a");
+        db.set("table", "a", "a", 123.0);
+        db.set("table", "b", "a", 124.0);
+        db.set("meta", "meta", "name", "Bob");
+        db.set("meta", "meta", "Date", "2024/02/21");
+        let data = db.export_updates(Default::default());
+        let mut new_db = LwwDb::new();
+        new_db.import_updates(&data);
+        println!("{}", &db);
+        println!("{}", &new_db);
+        dbg!(&db);
+        dbg!(&new_db);
+        assert!(db.check_eq(&new_db));
+        let mut c_db = LwwDb::new();
+        c_db.import_updates(&new_db.export_updates(Default::default()));
+        assert!(db.check_eq(&c_db));
     }
 }

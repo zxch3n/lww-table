@@ -1,16 +1,9 @@
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex},
-};
+use std::collections::BTreeMap;
 
 use fxhash::FxHashMap;
 use smol_str::SmolStr;
 
-use crate::{
-    clock::{Lamport, OpId, Peer, VectorClock},
-    table::Row,
-    value::Value,
-};
+use crate::clock::{Lamport, OpId, Peer, VectorClock};
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct OpLog {
@@ -33,10 +26,6 @@ pub struct TableRow {
 }
 
 impl OpLog {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     pub fn record_update(&mut self, id: OpId, table: SmolStr, row: SmolStr) {
         let peer = id.peer;
         let lamport = id.lamport;

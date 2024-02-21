@@ -67,11 +67,17 @@ impl LwwDb {
         self.peer = peer;
     }
 
+    #[allow(unused)]
     pub(crate) fn check_eq(&self, other: &Self) -> bool {
         self.tables == other.tables
     }
 
-    pub fn set(
+    #[inline(always)]
+    pub fn set(&mut self, table_str: &str, row: &str, col: &str, value: impl Into<Value>) {
+        self.set_(table_str, row, col, value.into(), None)
+    }
+
+    pub(crate) fn set_(
         &mut self,
         table_str: &str,
         row: &str,
@@ -79,10 +85,17 @@ impl LwwDb {
         value: impl Into<Value>,
         id: Option<OpId>,
     ) {
-        self.set_(table_str, row, col, value.into(), id)
+        self.inner_set_(table_str, row, col, value.into(), id)
     }
 
-    fn set_(&mut self, table_str: &str, row: &str, col: &str, value: Value, id: Option<OpId>) {
+    fn inner_set_(
+        &mut self,
+        table_str: &str,
+        row: &str,
+        col: &str,
+        value: Value,
+        id: Option<OpId>,
+    ) {
         let id = id.unwrap_or_else(|| self.next_id());
         let table = if let Some(table) = self.tables.get_mut(table_str) {
             table
@@ -96,7 +109,25 @@ impl LwwDb {
         }
     }
 
-    pub fn delete_row(&mut self, table_str: &str, row: &str, id: Option<OpId>) {
+    pub fn delete(&mut self, table_str: &str, row: &str, col: &str) {
+        let id = self.next_id();
+        let table = if let Some(table) = self.tables.get_mut(table_str) {
+            table
+        } else {
+            self.create_table(table_str);
+            self.tables.get_mut(table_str).unwrap()
+        };
+
+        if table.delete(row, col, id) {
+            self.oplog.record_update(id, table_str.into(), row.into())
+        }
+    }
+
+    pub fn delete_row(&mut self, table_str: &str, row: &str) {
+        self.delete_row_(table_str, row, None)
+    }
+
+    pub(crate) fn delete_row_(&mut self, table_str: &str, row: &str, id: Option<OpId>) {
         let id = id.unwrap_or_else(|| self.next_id());
         let table = if let Some(table) = self.tables.get_mut(table_str) {
             table
@@ -111,7 +142,11 @@ impl LwwDb {
         }
     }
 
-    pub fn delete_table(&mut self, table_str: &str, id: Option<OpId>) {
+    pub fn delete_table(&mut self, table_str: &str) {
+        self.delete_table_(table_str, None)
+    }
+
+    pub(crate) fn delete_table_(&mut self, table_str: &str, id: Option<OpId>) {
         let id = id.unwrap_or_else(|| self.next_id());
         let table = if let Some(table) = self.tables.get_mut(table_str) {
             table
@@ -123,6 +158,10 @@ impl LwwDb {
         if table.delete_table(id) {
             self.oplog.record_delete_table(id, table_str.into())
         }
+    }
+
+    pub fn iter_tables(&self) -> impl Iterator<Item = (&SmolStr, &LwwTable)> {
+        self.tables.iter()
     }
 
     fn next_id(&mut self) -> OpId {
@@ -137,7 +176,7 @@ impl LwwDb {
         self.tables.insert(name.into(), LwwTable::new());
     }
 
-    pub fn import(&mut self, data: &[u8]) {
+    pub fn import_snapshot(&mut self, _data: &[u8]) {
         todo!()
     }
 
@@ -145,7 +184,7 @@ impl LwwDb {
         todo!()
     }
 
-    pub fn subscribe(&mut self, listener: Box<dyn Fn(&Event)>) {
+    pub fn subscribe(&mut self, _listener: Box<dyn Fn(&Event)>) {
         todo!()
     }
 }

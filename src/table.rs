@@ -20,6 +20,19 @@ pub struct LwwTable {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Col {
     name: Arc<str>,
+    num: usize,
+}
+
+impl Col {
+    fn fetch_dec(&mut self) -> usize {
+        self.num -= 1;
+        self.num
+    }
+
+    fn fetch_inc(&mut self) -> usize {
+        self.num += 1;
+        self.num
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -74,32 +87,53 @@ impl LwwTable {
         todo!()
     }
 
-    pub(crate) fn delete(&mut self, row: &str, col: &str, id: OpId) {
-        if let Some(row) = self.rows.get_mut(row) {
-            if let Some(value) = row.map.get_mut(col) {
-                if value.id < id {
-                    value.id = id;
-                    value.value = Value::Deleted;
-                }
+    pub(crate) fn delete(&mut self, row: &str, col: &str, id: OpId) -> bool {
+        let row = self.rows.entry(row.into()).or_default();
+        if let Some(value) = row.map.get_mut(col) {
+            if value.id > id {
+                return false;
             }
+
+            value.id = id;
+            if value.value != Value::Deleted && self.cols.get_mut(col).unwrap().fetch_dec() == 0 {
+                self.cols.remove(col);
+            }
+
+            value.value = Value::Deleted;
+        } else {
+            row.map.insert(
+                col.into(),
+                ValueAndClock {
+                    id,
+                    value: Value::Deleted,
+                },
+            );
         }
+
+        true
     }
 
     /// Return whether successful or not
     pub(crate) fn delete_row(&mut self, row: &str, id: OpId) -> bool {
-        if let Some(row) = self.rows.get_mut(row) {
-            if let Some(cleared_at) = row.cleared_at {
-                if cleared_at > id {
-                    return false;
-                }
+        let row = self.rows.entry(row.into()).or_default();
+        if let Some(cleared_at) = row.cleared_at {
+            if cleared_at > id {
+                return false;
             }
-
-            row.map.retain(|_, v| v.id > id);
-            row.cleared_at = Some(id);
-            return true;
         }
 
-        false
+        row.map.retain(|c, v| {
+            if v.id >= id {
+                true
+            } else {
+                if self.cols.get_mut(c).unwrap().fetch_dec() == 0 {
+                    self.cols.remove(c);
+                }
+                false
+            }
+        });
+        row.cleared_at = Some(id);
+        true
     }
 
     /// Return whether successful or not
@@ -111,7 +145,16 @@ impl LwwTable {
         }
 
         self.rows.retain(|_, row| {
-            row.map.retain(|_, v| v.id > id);
+            row.map.retain(|c, v| {
+                if v.id >= id {
+                    true
+                } else {
+                    if self.cols.get_mut(c).unwrap().fetch_dec() == 0 {
+                        self.cols.remove(c);
+                    }
+                    false
+                }
+            });
             !row.map.is_empty()
         });
 
@@ -121,6 +164,10 @@ impl LwwTable {
 
     /// Return whether successful or not
     pub(crate) fn set(&mut self, row: &str, col: &str, value: Value, id: OpId) -> bool {
+        if value == Value::Deleted {
+            return self.delete(row, col, id);
+        }
+
         if let Some(removed) = self.removed {
             if removed > id {
                 return false;
@@ -132,7 +179,13 @@ impl LwwTable {
         }
 
         if !self.cols.contains_key(col) {
-            self.cols.insert(col.into(), Col { name: col.into() });
+            self.cols.insert(
+                col.into(),
+                Col {
+                    name: col.into(),
+                    num: 0,
+                },
+            );
         }
 
         let row = self.rows.get_mut(row).unwrap();
@@ -146,10 +199,36 @@ impl LwwTable {
             if old.id > id {
                 return false;
             }
+        } else {
+            self.cols.get_mut(col).unwrap().fetch_inc();
         }
 
         row.map.insert(col.into(), ValueAndClock { id, value });
 
         true
+    }
+
+    pub fn iter_rows(&self) -> impl Iterator<Item = (&str, &Row)> {
+        self.rows.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
+    #[allow(unused)]
+    pub(crate) fn dbg_check(&self) {
+        // check the cols' numbers are correct
+        for (col, col_data) in &self.cols {
+            let mut num = 0;
+            for row in self.rows.values() {
+                if row.map.contains_key(col) {
+                    num += 1;
+                }
+            }
+            assert_eq!(num, col_data.num);
+        }
+    }
+}
+
+impl Row {
+    pub fn iter(&self) -> impl Iterator<Item = (&SmolStr, &ValueAndClock)> {
+        self.map.iter()
     }
 }
