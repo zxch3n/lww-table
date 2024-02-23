@@ -114,3 +114,27 @@ LwwDb {
   +--------+------+------+
 }
 ```
+
+## Performance
+
+For a table created by the following code:
+
+```rust no_run
+let mut db = lww_table::LwwDb::new();
+for i in 0..100_000 {
+    for j in 0..10 {
+        db.set("table", &i.to_string(), j.to_string().as_str(), i + j);
+    }
+}
+```
+
+The benchmark is conducted on MacBook Pro (13-inch, M1, 2020).
+
+| Set             | 344.884ms     |
+|-----------------|---------------|
+| Export updates  | 272.93475ms   |
+| Updates size    | 2552394 bytes |
+| Import updates  | 329.477459ms  |
+| Export snapshot | 26.450417ms   |
+| Snapshot size   | 323420 bytes  |
+| Import snapshot | 143.268833ms  |
