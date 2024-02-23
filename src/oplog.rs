@@ -1,12 +1,13 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
-use fxhash::FxHashMap;
+use fxhash::{FxHashMap, FxHashSet};
 use smol_str::SmolStr;
 
 use crate::clock::{Lamport, OpId, Peer, VectorClock};
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct OpLog {
+    str_pool: FxHashSet<Arc<str>>,
     map: FxHashMap<Peer, BTreeMap<Lamport, Op>>,
     vv: VectorClock,
     max_lamport: Lamport,
@@ -14,24 +15,31 @@ pub(crate) struct OpLog {
 
 #[derive(Debug, Clone)]
 pub(crate) enum Op {
-    Update { table: SmolStr, row: SmolStr },
-    DeleteTable { table: SmolStr },
-    DeleteRow { table: SmolStr, row: SmolStr },
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct TableRow {
-    pub table: SmolStr,
-    pub row: SmolStr,
+    Update { table: Arc<str>, row: Arc<str> },
+    DeleteTable { table: Arc<str> },
+    DeleteRow { table: Arc<str>, row: Arc<str> },
 }
 
 #[derive(Default)]
 pub(crate) struct OpLogBuilder {
+    str_pool: FxHashSet<Arc<str>>,
     ops: FxHashMap<Peer, Vec<(Lamport, Op)>>,
+}
+
+fn get_or_intern(pool: &mut FxHashSet<Arc<str>>, s: &str) -> Arc<str> {
+    if let Some(s) = pool.get(s) {
+        s.clone()
+    } else {
+        let s: Arc<str> = Arc::from(s);
+        pool.insert(s.clone());
+        s
+    }
 }
 
 impl OpLogBuilder {
     pub fn record_update(&mut self, id: OpId, table: SmolStr, row: SmolStr) {
+        let table = get_or_intern(&mut self.str_pool, &table);
+        let row = get_or_intern(&mut self.str_pool, &row);
         self.ops
             .entry(id.peer)
             .or_default()
@@ -39,6 +47,8 @@ impl OpLogBuilder {
     }
 
     pub(crate) fn record_delete_row(&mut self, id: OpId, table: SmolStr, row: SmolStr) {
+        let table = get_or_intern(&mut self.str_pool, &table);
+        let row = get_or_intern(&mut self.str_pool, &row);
         self.ops
             .entry(id.peer)
             .or_default()
@@ -46,6 +56,7 @@ impl OpLogBuilder {
     }
 
     pub(crate) fn record_delete_table(&mut self, id: OpId, table: SmolStr) {
+        let table = get_or_intern(&mut self.str_pool, &table);
         self.ops
             .entry(id.peer)
             .or_default()
@@ -69,6 +80,7 @@ impl OpLogBuilder {
         };
 
         OpLog {
+            str_pool: self.str_pool,
             max_lamport: vv.iter().map(|(_, v)| *v).max().unwrap_or(0),
             vv,
             map,
@@ -78,6 +90,8 @@ impl OpLogBuilder {
 
 impl OpLog {
     pub fn record_update(&mut self, id: OpId, table: SmolStr, row: SmolStr) {
+        let table = get_or_intern(&mut self.str_pool, &table);
+        let row = get_or_intern(&mut self.str_pool, &row);
         let peer = id.peer;
         let lamport = id.lamport;
         self.max_lamport = self.max_lamport.max(lamport);
@@ -87,6 +101,8 @@ impl OpLog {
     }
 
     pub(crate) fn record_delete_row(&mut self, id: OpId, table: SmolStr, row: SmolStr) {
+        let table = get_or_intern(&mut self.str_pool, &table);
+        let row = get_or_intern(&mut self.str_pool, &row);
         let peer = id.peer;
         let lamport = id.lamport;
         self.max_lamport = self.max_lamport.max(lamport);
@@ -96,6 +112,7 @@ impl OpLog {
     }
 
     pub(crate) fn record_delete_table(&mut self, id: OpId, table: SmolStr) {
+        let table = get_or_intern(&mut self.str_pool, &table);
         let peer = id.peer;
         let lamport = id.lamport;
         self.max_lamport = self.max_lamport.max(lamport);

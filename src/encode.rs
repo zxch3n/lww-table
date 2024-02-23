@@ -6,9 +6,10 @@ use itertools::izip;
 use std::{
     borrow::{Borrow, Cow},
     hash::Hash,
+    sync::Arc,
 };
 
-use fxhash::FxHashMap;
+use fxhash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
@@ -28,7 +29,7 @@ use self::{
 
 #[derive(Serialize, Deserialize)]
 struct Final<'a> {
-    str: Vec<SmolStr>,
+    str: Vec<Box<str>>,
     peers: Vec<Peer>,
     #[serde(borrow)]
     table: Cow<'a, [u8]>,
@@ -56,15 +57,6 @@ struct EncodedTable<'a> {
     str: SmolStr,
     #[serde(borrow)]
     table: Cow<'a, [u8]>,
-}
-
-struct EncodedOp {
-    table: usize,
-    row: Option<usize>,
-    col: Option<usize>,
-    value: Value,
-    peer_idx: usize,
-    lamport: Lamport,
 }
 
 struct Register<T> {
@@ -103,14 +95,16 @@ impl<T: Hash + Eq + Clone> Register<T> {
 
 impl LwwDb {
     pub fn export_updates(&self, from: VectorClock) -> Vec<u8> {
-        let mut str_pool: Register<SmolStr> = Register::new();
+        let mut str_pool: Register<Arc<str>> = Register::new();
         let mut peer_pool: Register<Peer> = Register::new();
         let mut table_en = DeltaRleEncoder::new();
         let mut row_en = DeltaRleEncoder::new();
         let mut col_en = DeltaRleEncoder::new();
         let mut peer_en = DeltaRleEncoder::new();
         let mut lamport_en = DeltaRleEncoder::new();
-        let mut values_en = Vec::new();
+        let deleted_v = Value::Deleted;
+        let mut values_en: Vec<&Value> = Vec::new();
+        let mut updated_rows = FxHashSet::default();
         for (id, op) in self.oplog.iter_from(from.clone()) {
             debug_assert!(!from.includes(id));
             match op {
@@ -118,30 +112,13 @@ impl LwwDb {
                     table: table_name,
                     row: row_name,
                 } => {
-                    if let Some(table) = self.tables.get(table_name) {
-                        for RowValue {
-                            col_name,
-                            id,
-                            value,
-                        } in table.iter_row(row_name)
-                        {
-                            if !from.includes(id) {
-                                let col_name: SmolStr = col_name.into();
-                                table_en.push(str_pool.register(table_name) as i64);
-                                row_en.push(str_pool.register(row_name) as i64 + 1);
-                                col_en.push(str_pool.register(&col_name) as i64 + 1);
-                                values_en.push(value.clone());
-                                peer_en.push(peer_pool.register(&id.peer) as i64);
-                                lamport_en.push(id.lamport as i64);
-                            }
-                        }
-                    }
+                    updated_rows.insert((table_name, row_name));
                 }
                 crate::oplog::Op::DeleteTable { table } => {
                     table_en.push(str_pool.register(table) as i64);
                     row_en.push(0);
                     col_en.push(0);
-                    values_en.push(Value::Deleted);
+                    values_en.push(&deleted_v);
                     peer_en.push(peer_pool.register(&id.peer) as i64);
                     lamport_en.push(id.lamport as i64);
                 }
@@ -149,15 +126,40 @@ impl LwwDb {
                     table_en.push(str_pool.register(table) as i64);
                     row_en.push(str_pool.register(row) as i64 + 1);
                     col_en.push(0);
-                    values_en.push(Value::Deleted);
+                    values_en.push(&deleted_v);
                     peer_en.push(peer_pool.register(&id.peer) as i64);
                     lamport_en.push(id.lamport as i64);
                 }
             }
         }
 
+        for (table_name, row_name) in updated_rows {
+            if let Some(table) = self.tables.get(&**table_name) {
+                for RowValue {
+                    col_name,
+                    id,
+                    value,
+                } in table.iter_row(row_name)
+                {
+                    if !from.includes(id) {
+                        let col_name: Arc<str> = col_name.into();
+                        table_en.push(str_pool.register(table_name) as i64);
+                        row_en.push(str_pool.register(row_name) as i64 + 1);
+                        col_en.push(str_pool.register(&col_name) as i64 + 1);
+                        values_en.push(value);
+                        peer_en.push(peer_pool.register(&id.peer) as i64);
+                        lamport_en.push(id.lamport as i64);
+                    }
+                }
+            }
+        }
+
         let f = Final {
-            str: str_pool.finish(),
+            str: str_pool
+                .finish()
+                .into_iter()
+                .map(|s| (*s).to_string().into_boxed_str())
+                .collect(),
             peers: peer_pool.finish(),
             table: Cow::Owned(table_en.finish()),
             row: Cow::Owned(row_en.finish()),
@@ -202,7 +204,7 @@ impl LwwDb {
                 lamport: l as Lamport,
             };
 
-            self.apply_op(id, table, row, col, value);
+            self.apply_op(id, table, row.map(|x| &**x), col.map(|x| &**x), value);
         }
     }
 
@@ -250,9 +252,9 @@ impl LwwDb {
     fn apply_op(
         &mut self,
         id: OpId,
-        table: &SmolStr,
-        row: Option<&SmolStr>,
-        col: Option<&SmolStr>,
+        table: &str,
+        row: Option<&str>,
+        col: Option<&str>,
         value: Value,
     ) {
         match value {
