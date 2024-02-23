@@ -12,9 +12,16 @@ pub struct OpId {
     pub peer: Peer,
 }
 
+impl OpId {
+    pub fn new(lamport: Lamport, peer: Peer) -> Self {
+        Self { lamport, peer }
+    }
+}
+
+/// Inclusive range of [OpId].
 #[derive(Debug, Clone, Default)]
 pub struct VectorClock {
-    map: FxHashMap<Peer, Lamport>,
+    pub(crate) map: FxHashMap<Peer, Lamport>,
 }
 
 impl Deref for VectorClock {

@@ -5,7 +5,7 @@ use smol_str::SmolStr;
 
 use crate::{
     clock::{Lamport, OpId, Peer},
-    table::LwwTable,
+    table::{Column, LwwTable, Row},
     value::Value,
 };
 
@@ -53,13 +53,16 @@ pub(crate) fn encode_snapshot(table: &LwwTable, peer_pool: &mut Register<Peer>) 
     let mut values = Vec::new();
     let mut lamport = DeltaRleEncoder::new();
     let mut peer_idx = DeltaRleEncoder::new();
-    for (col_name, col) in table.cols.iter() {
-        for row in table.rows.values() {
-            if let Some(v) = row.map.get(col_name) {
+    for (_col_name, col) in table.cols.iter() {
+        assert_eq!(col.value.len(), table.rows.len());
+        debug_assert_eq!(col.value.len(), col.lamport.len());
+        debug_assert_eq!(col.value.len(), col.peer.len());
+        for ((v, l), peer) in col.value.iter().zip(&col.lamport).zip(&col.peer) {
+            if *l != 0 {
                 has_value_encoder.push(true);
-                peer_idx.push(peer_pool.register(&v.id.peer) as i64);
-                lamport.push(v.id.lamport as i64);
-                values.push(v.value.clone());
+                peer_idx.push(peer_pool.register(peer) as i64);
+                lamport.push(*l as i64);
+                values.push(v.clone());
             } else {
                 has_value_encoder.push(false);
             }
@@ -69,8 +72,8 @@ pub(crate) fn encode_snapshot(table: &LwwTable, peer_pool: &mut Register<Peer>) 
     let mut row_deleted_encoder = BoolRleEncoder::new();
     let mut deleted_peer_idx = Vec::new();
     let mut deleted_lamport = Vec::new();
-    for row in table.rows.values() {
-        if let Some(d) = row.cleared_at {
+    for row in table.rows.iter() {
+        if let Some(d) = row.deleted {
             row_deleted_encoder.push(true);
             deleted_peer_idx.push(peer_pool.register(&d.peer));
             deleted_lamport.push(d.lamport);
@@ -83,7 +86,7 @@ pub(crate) fn encode_snapshot(table: &LwwTable, peer_pool: &mut Register<Peer>) 
         table_deleted: table
             .removed
             .map(|x| (peer_pool.register(&x.peer), x.lamport)),
-        row_names: table.rows.keys().cloned().collect(),
+        row_names: table.rows.iter().map(|x| &x.row_id).cloned().collect(),
         col_names: table.cols.keys().cloned().collect(),
         has_value: Cow::Owned(has_value_encoder.finish()),
         values,
@@ -125,19 +128,28 @@ pub(crate) fn decode_snapshot(
     let mut lampoort = DeltaRleDecoder::new(&f.lamport);
     let mut peer_idx = DeltaRleDecoder::new(&f.peer_idx);
     let mut value_iter = f.values.into_iter();
+    for row in f.row_names.iter() {
+        table.rows.push(Row {
+            row_id: row.clone(),
+            deleted: None,
+        });
+    }
+    table.row_id_to_idx = table
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(i, x)| (x.row_id.clone(), i))
+        .collect();
+
     for col in f.col_names {
-        table
+        let col = table
             .cols
             .entry(col.clone())
-            .or_insert_with(|| crate::table::Col {
-                name: col.clone().into(),
-                num: 0,
-            });
+            .or_insert_with(|| Column::with_len(f.row_names.len()));
 
         let mut num = 0;
-        for row in f.row_names.iter() {
+        for (i, row) in f.row_names.iter().enumerate() {
             if has_value_iter.next().unwrap() {
-                num += 1;
                 let l = lampoort.next().unwrap();
                 let p = peer_idx.next().unwrap();
                 let v = value_iter.next().unwrap();
@@ -147,11 +159,15 @@ pub(crate) fn decode_snapshot(
                     peer: p,
                 };
                 on_change(Change::Value { row, id });
-                table.set(row, &col, v, id);
+                assert!(l > 0);
+                num += 1;
+                col.lamport[i] = l as Lamport;
+                col.value[i] = v;
+                col.peer[i] = p;
             }
         }
 
-        table.cols.get_mut(&col).unwrap().num = num;
+        col.num = num;
     }
 
     let mut row_deleted_iter = BoolRleDecoder::new(&f.row_deleted);
@@ -166,7 +182,8 @@ pub(crate) fn decode_snapshot(
                 lamport: *lamport,
             };
             on_change(Change::DelRow { row, id });
-            table.rows.get_mut(row).unwrap().cleared_at = Some(id);
+            let row_idx = table.row_id_to_idx.get(row).unwrap();
+            table.rows.get_mut(*row_idx).unwrap().deleted = Some(id);
         }
     }
 

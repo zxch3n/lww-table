@@ -42,13 +42,18 @@ impl Default for LwwDb {
 
 impl Display for LwwDb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "LwwDb {{")?;
         let mut s = String::new();
         for (name, table) in &self.tables {
-            s.push_str(&format!("Table: {}\n", name));
-            s.push_str(&format!("{}\n", table));
+            s.push_str(&format!("# {}\n", name));
+            s.push_str(&format!("{}\n\n", table));
         }
 
-        write!(f, "{}", s)
+        let s = s.trim();
+        for line in s.split('\n') {
+            writeln!(f, "  {}", line)?;
+        }
+        writeln!(f, "}}")
     }
 }
 
@@ -67,8 +72,24 @@ impl LwwDb {
         self.peer = peer;
     }
 
-    pub fn table_eq(&self, other: &Self) -> bool {
-        self.tables == other.tables
+    pub fn table_eq(&mut self, other: &mut Self) -> bool {
+        if self.tables.len() != other.tables.len() {
+            return false;
+        }
+
+        for (name, table) in &mut self.tables {
+            if let Some(other_table) = other.tables.get_mut(name) {
+                if !table.check_eq(other_table) {
+                    eprintln!("{}", &table);
+                    eprintln!("{}", &other_table);
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+
+        true
     }
 
     #[inline(always)]

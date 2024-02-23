@@ -15,6 +15,8 @@ use smol_str::SmolStr;
 use crate::{
     clock::{Lamport, OpId, Peer, VectorClock},
     encode::delta_rle::DeltaRleEncoder,
+    oplog::OpLogBuilder,
+    table::RowValue,
     value::Value,
     LwwDb,
 };
@@ -112,18 +114,22 @@ impl LwwDb {
                     row: row_name,
                 } => {
                     if let Some(table) = self.tables.get(table_name) {
-                        if let Some(row) = table.rows.get(row_name) {
-                            for (col, value) in row.map.iter() {
-                                if !from.includes(value.id) {
-                                    ans.push(EncodedOp {
-                                        table: str_pool.register(table_name),
-                                        row: Some(str_pool.register(row_name)),
-                                        col: Some(str_pool.register(col)),
-                                        value: value.value.clone(),
-                                        peer_idx: peer_pool.register(&value.id.peer),
-                                        lamport: value.id.lamport,
-                                    });
-                                }
+                        for RowValue {
+                            col_name,
+                            id,
+                            value,
+                        } in table.iter_row(row_name)
+                        {
+                            if !from.includes(id) {
+                                let col_name: SmolStr = col_name.into();
+                                ans.push(EncodedOp {
+                                    table: str_pool.register(table_name),
+                                    row: Some(str_pool.register(row_name)),
+                                    col: Some(str_pool.register(&col_name)),
+                                    value: value.clone(),
+                                    peer_idx: peer_pool.register(&id.peer),
+                                    lamport: id.lamport,
+                                });
                             }
                         }
                     }
@@ -239,22 +245,23 @@ impl LwwDb {
     pub fn from_snapshot(data: &[u8]) -> Self {
         let encoded: EncodedSnapshot = postcard::from_bytes(data).unwrap();
         let mut db = LwwDb::new();
+        let mut oplog_builder = OpLogBuilder::default();
         for table in encoded.tables {
             let v = decode_snapshot(&table.table, &encoded.peers, |c| match c {
                 table_snapshot::Change::DelTable { id } => {
-                    db.oplog.record_delete_table(id, table.str.clone());
+                    oplog_builder.record_delete_table(id, table.str.clone());
                 }
                 table_snapshot::Change::DelRow { row, id } => {
-                    db.oplog
-                        .record_delete_row(id, table.str.clone(), row.clone());
+                    oplog_builder.record_delete_row(id, table.str.clone(), row.clone());
                 }
                 table_snapshot::Change::Value { row, id } => {
-                    db.oplog.record_update(id, table.str.clone(), row.clone());
+                    oplog_builder.record_update(id, table.str.clone(), row.clone());
                 }
             });
             db.tables.insert(table.str, v);
         }
 
+        db.oplog = oplog_builder.build();
         db
     }
 
@@ -294,10 +301,15 @@ mod test_encode_from {
         let data = db.export_updates(Default::default());
         let mut new_db = LwwDb::new();
         new_db.import_updates(&data);
-        assert!(db.table_eq(&new_db));
+        assert!(
+            db.table_eq(&mut new_db),
+            "original: {}\nnew: {}",
+            db,
+            new_db
+        );
         let mut c_db = LwwDb::new();
         c_db.import_updates(&new_db.export_updates(Default::default()));
-        assert!(db.table_eq(&c_db));
+        assert!(db.table_eq(&mut c_db));
     }
 
     #[test]
@@ -313,14 +325,17 @@ mod test_encode_from {
         let data = db.export_updates(Default::default());
         let mut new_db = LwwDb::new();
         new_db.import_updates(&data);
-        println!("{}", &db);
-        println!("{}", &new_db);
-        dbg!(&db);
-        dbg!(&new_db);
-        assert!(db.table_eq(&new_db));
+        // println!("{}", &db);
+        // println!("{}", &new_db);
+        assert!(
+            db.table_eq(&mut new_db),
+            "original: {}\nnew: {}",
+            db,
+            new_db
+        );
         let mut c_db = LwwDb::new();
         c_db.import_updates(&new_db.export_updates(Default::default()));
-        assert!(db.table_eq(&c_db));
+        assert!(db.table_eq(&mut c_db));
     }
 
     #[test]
@@ -333,10 +348,12 @@ mod test_encode_from {
         db.set_("meta", "meta", "name", "Bob", None);
         db.set_("meta", "meta", "Date", "2024/02/21", None);
         let data = db.export_snapshot();
-        let new_db = LwwDb::from_snapshot(&data);
-        assert!(db.table_eq(&new_db));
+        let mut new_db = LwwDb::from_snapshot(&data);
+        println!("{}", &db);
+        println!("{}", &new_db);
+        assert!(db.table_eq(&mut new_db));
         let mut c_db = LwwDb::new();
         c_db.import_updates(&new_db.export_updates(Default::default()));
-        assert!(db.table_eq(&c_db));
+        assert!(db.table_eq(&mut c_db));
     }
 }

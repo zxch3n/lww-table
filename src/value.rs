@@ -6,6 +6,7 @@ use smol_str::SmolStr;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Value {
     Double(f64),
+    I64(i64),
     Str(SmolStr),
     True,
     False,
@@ -17,12 +18,19 @@ impl Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Double(d) => write!(f, "{}", d),
+            Value::I64(d) => write!(f, "{}", d),
             Value::Str(s) => write!(f, "\"{}\"", s),
             Value::True => write!(f, "true"),
             Value::False => write!(f, "false"),
             Value::Null => write!(f, "null"),
             Value::Deleted => write!(f, "deleted"),
         }
+    }
+}
+
+impl From<i64> for Value {
+    fn from(f: i64) -> Self {
+        Self::I64(f)
     }
 }
 

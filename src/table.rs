@@ -1,59 +1,50 @@
-use crate::{clock::OpId, value::Value};
+use std::{fmt::Display, iter::once};
+
 use fxhash::FxHashMap;
 use smol_str::SmolStr;
-use std::{
-    collections::BTreeMap,
-    fmt::{Display, Formatter},
-    iter::once,
-    sync::Arc,
-};
-use tabled::settings::Style;
 
-#[derive(Debug, Clone, Default, PartialEq)]
+use crate::{
+    clock::{Lamport, OpId, Peer},
+    value::Value,
+};
+
+#[derive(Debug, Clone, Default)]
 pub struct LwwTable {
-    pub(crate) cols: BTreeMap<SmolStr, Col>,
-    pub(crate) rows: BTreeMap<SmolStr, Row>,
-    /// If this is Some, the content of the table can only contain rows that inserted after the given OpId
+    pub(crate) row_id_to_idx: FxHashMap<SmolStr, usize>,
+    pub(crate) rows: Vec<Row>,
+    pub(crate) cols: FxHashMap<SmolStr, Column>,
     pub(crate) removed: Option<OpId>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Col {
-    pub name: Arc<str>,
-    pub num: usize,
-}
-
-impl Col {
-    fn fetch_dec(&mut self) -> usize {
-        self.num -= 1;
-        self.num
-    }
-
-    fn fetch_inc(&mut self) -> usize {
-        self.num += 1;
-        self.num
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Row {
-    /// We use Arc<str> to reduce memory usage
-    pub(crate) map: FxHashMap<SmolStr, ValueAndClock>,
-    /// If this is Some, the content of the row can only contain values that inserted after the given OpId
-    pub(crate) cleared_at: Option<OpId>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ValueAndClock {
-    pub id: OpId,
-    pub value: Value,
-}
-
 impl Display for LwwTable {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let build_table = &mut self.build_table();
-        let table = build_table.with(Style::modern_rounded());
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let table = self.build_table();
         write!(f, "{}", table)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row {
+    pub(crate) row_id: SmolStr,
+    pub(crate) deleted: Option<OpId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Column {
+    pub(crate) value: Vec<Value>,
+    pub(crate) lamport: Vec<Lamport>,
+    pub(crate) peer: Vec<Peer>,
+    pub(crate) num: usize,
+}
+
+impl Column {
+    pub(crate) fn with_len(len: usize) -> Column {
+        Column {
+            value: vec![Value::Null; len],
+            lamport: vec![0; len],
+            peer: vec![0; len],
+            num: 0,
+        }
     }
 }
 
@@ -63,172 +54,242 @@ impl LwwTable {
     }
 
     pub fn build_table(&self) -> tabled::Table {
-        use tabled::builder::Builder;
-
-        let mut builder = Builder::default();
-        builder.push_record(once("Row Name").chain(self.cols.keys().map(|x| x.as_str())));
-        for (row, row_data) in &self.rows {
-            let mut record = Vec::new();
-            record.push(row.to_string());
-            for col in self.cols.keys() {
-                if let Some(value) = row_data.map.get(col) {
-                    record.push(value.value.to_string());
-                } else {
-                    record.push("".to_string());
-                }
-            }
-            builder.push_record(record);
+        let mut table = tabled::builder::Builder::default();
+        table.push_record(once("row_id"));
+        for row_name in &self.rows {
+            table.push_record(once(row_name.row_id.as_str()));
         }
 
-        builder.build()
-    }
-
-    pub fn to_json(&self) -> serde_json::Value {
-        todo!()
-    }
-
-    pub(crate) fn delete(&mut self, row: &str, col: &str, id: OpId) -> bool {
-        let row = self.rows.entry(row.into()).or_default();
-        if let Some(value) = row.map.get_mut(col) {
-            if value.id > id {
-                return false;
-            }
-
-            value.id = id;
-            if value.value != Value::Deleted && self.cols.get_mut(col).unwrap().fetch_dec() == 0 {
-                self.cols.remove(col);
-            }
-
-            value.value = Value::Deleted;
-        } else {
-            row.map.insert(
-                col.into(),
-                ValueAndClock {
-                    id,
-                    value: Value::Deleted,
-                },
+        for (col_name, col) in &self.cols {
+            table.push_column(
+                once(col_name.to_string()).chain(col.value.iter().map(|v| v.to_string())),
             );
         }
-
-        true
+        table.build()
     }
 
-    /// Return whether successful or not
-    pub(crate) fn delete_row(&mut self, row: &str, id: OpId) -> bool {
-        let row = self.rows.entry(row.into()).or_default();
-        if let Some(cleared_at) = row.cleared_at {
-            if cleared_at > id {
-                return false;
-            }
+    fn ensure_row(&mut self, row_id: &str) -> usize {
+        if let Some(v) = self.row_id_to_idx.get(row_id) {
+            return *v;
         }
 
-        row.map.retain(|c, v| {
-            if v.id >= id {
-                true
-            } else {
-                if self.cols.get_mut(c).unwrap().fetch_dec() == 0 {
-                    self.cols.remove(c);
-                }
-                false
-            }
+        let idx = self.rows.len();
+        let row_id = SmolStr::new(row_id);
+        self.row_id_to_idx.insert(row_id.clone(), self.rows.len());
+        self.rows.push(Row {
+            row_id,
+            deleted: None,
         });
-        row.cleared_at = Some(id);
-        true
+        for (_, col) in self.cols.iter_mut() {
+            col.value.push(Value::Null);
+            col.lamport.push(0);
+            col.peer.push(0);
+        }
+
+        idx
     }
 
-    /// Return whether successful or not
-    pub(crate) fn delete_table(&mut self, id: OpId) -> bool {
+    fn ensure_col(&mut self, col_name: &str) -> &mut Column {
+        self.cols.entry(col_name.into()).or_insert_with(|| {
+            let len = self.rows.len();
+            Column {
+                value: vec![Value::Null; len],
+                lamport: vec![0; len],
+                peer: vec![0; len],
+                num: 0,
+            }
+        })
+    }
+
+    pub fn set(&mut self, row: &str, col: &str, v: Value, id: OpId) -> bool {
+        if id.lamport == 0 {
+            assert!(id.peer == 0, "lamport is 0, peer should be 0");
+            assert!(v == Value::Null, "lamport is 0, value should be null");
+            return false;
+        }
+
         if let Some(removed) = self.removed {
-            if removed > id {
+            if id < removed {
                 return false;
             }
         }
 
-        self.rows.retain(|_, row| {
-            row.map.retain(|c, v| {
-                if v.id >= id {
-                    true
-                } else {
-                    if self.cols.get_mut(c).unwrap().fetch_dec() == 0 {
-                        self.cols.remove(c);
-                    }
-                    false
-                }
-            });
-            !row.map.is_empty()
-        });
+        let row_idx = self.ensure_row(row);
+        if let Some(d) = self.rows[row_idx].deleted {
+            if id < d {
+                return false;
+            }
+        }
 
+        let col = self.ensure_col(col);
+        if id < OpId::new(col.lamport[row_idx], col.peer[row_idx]) {
+            return false;
+        }
+
+        if col.lamport[row_idx] == 0 {
+            col.num += 1;
+        }
+
+        col.value[row_idx] = v;
+        col.lamport[row_idx] = id.lamport;
+        col.peer[row_idx] = id.peer;
+        true
+    }
+
+    pub fn check_eq(&mut self, other: &mut Self) -> bool {
+        if self.rows.len() != other.rows.len() {
+            eprintln!("row number not equal");
+            return false;
+        }
+
+        if self.cols.len() != other.cols.len() {
+            eprintln!("col number not equal");
+            return false;
+        }
+
+        self.sort();
+        other.sort();
+
+        if self.rows != other.rows {
+            eprintln!(
+                "row not equal self:\n{:#?}\nother:\n{:#?}",
+                self.rows, other.rows
+            );
+            return false;
+        }
+
+        if self.cols != other.cols {
+            eprintln!(
+                "col not equal:\n{:#?}\nother:\n{:#?}",
+                self.cols, other.cols
+            );
+            return false;
+        }
+
+        true
+    }
+
+    pub fn delete(&mut self, row: &str, col: &str, id: OpId) -> bool {
+        self.set(row, col, Value::Null, id)
+    }
+
+    pub fn delete_row(&mut self, row: &str, id: OpId) -> bool {
+        let idx = self.ensure_row(row);
+        let row = &mut self.rows[idx];
+        if let Some(removed) = &row.deleted {
+            if id < *removed {
+                return false;
+            }
+        }
+
+        let mut to_remove = vec![];
+        for (c, col) in self.cols.iter_mut() {
+            if id < OpId::new(col.lamport[idx], col.peer[idx]) {
+                continue;
+            }
+
+            if col.lamport[idx] != 0 {
+                col.num -= 1;
+            }
+
+            col.value[idx] = Value::Null;
+            col.lamport[idx] = 0;
+            col.peer[idx] = 0;
+            if col.num == 0 {
+                to_remove.push(c.clone());
+            }
+        }
+
+        for c in to_remove {
+            self.cols.remove(&c);
+        }
+
+        row.deleted = Some(id);
+        true
+    }
+
+    pub fn delete_table(&mut self, id: OpId) -> bool {
+        if let Some(removed) = self.removed {
+            if id < removed {
+                return false;
+            }
+        }
+
+        // FIXME: should not clear the rows with clock > id
+        self.cols.clear();
+        self.rows.clear();
         self.removed = Some(id);
         true
     }
 
-    /// Return whether successful or not
-    pub(crate) fn set(&mut self, row: &str, col: &str, value: Value, id: OpId) -> bool {
-        if value == Value::Deleted {
-            return self.delete(row, col, id);
-        }
-
-        if let Some(removed) = self.removed {
-            if removed > id {
-                return false;
-            }
-        }
-
-        if !self.rows.contains_key(row) {
-            self.rows.insert(row.into(), Row::default());
-        }
-
-        if !self.cols.contains_key(col) {
-            self.cols.insert(
-                col.into(),
-                Col {
-                    name: col.into(),
-                    num: 0,
-                },
-            );
-        }
-
-        let row = self.rows.get_mut(row).unwrap();
-        if let Some(cleared_at) = row.cleared_at {
-            if cleared_at > id {
-                return false;
-            }
-        }
-
-        if let Some(old) = row.map.get(col) {
-            if old.id > id {
-                return false;
-            }
-        } else {
-            self.cols.get_mut(col).unwrap().fetch_inc();
-        }
-
-        row.map.insert(col.into(), ValueAndClock { id, value });
-
-        true
+    pub fn sort(&mut self) {
+        let mut vecs: Vec<&mut dyn Swappable> = self
+            .cols
+            .values_mut()
+            .flat_map(|c| {
+                [
+                    (&mut c.value) as &mut dyn Swappable,
+                    &mut c.lamport,
+                    &mut c.peer,
+                ]
+            })
+            .collect();
+        sort_vecs_based_on_first(&mut self.rows, |r| r.row_id.as_str(), &mut vecs);
+        self.row_id_to_idx = self
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (r.row_id.clone(), i))
+            .collect();
     }
 
-    pub fn iter_rows(&self) -> impl Iterator<Item = (&str, &Row)> {
-        self.rows.iter().map(|(k, v)| (k.as_str(), v))
+    pub fn iter_row(&self, row: &str) -> impl Iterator<Item = RowValue> + '_ {
+        let idx = self.row_id_to_idx.get(row);
+        idx.map(|idx| {
+            self.cols.iter().map(move |(col_name, col)| RowValue {
+                col_name,
+                id: OpId::new(col.lamport[*idx], col.peer[*idx]),
+                value: &col.value[*idx],
+            })
+        })
+        .into_iter()
+        .flatten()
     }
+}
 
-    #[allow(unused)]
-    pub(crate) fn dbg_check(&self) {
-        // check the cols' numbers are correct
-        for (col, col_data) in &self.cols {
-            let mut num = 0;
-            for row in self.rows.values() {
-                if row.map.contains_key(col) {
-                    num += 1;
-                }
+pub struct RowValue<'a> {
+    pub col_name: &'a str,
+    pub id: OpId,
+    pub value: &'a Value,
+}
+
+fn sort_vecs_based_on_first<T, U: Ord + ?Sized>(
+    a: &mut [T],
+    f: impl Fn(&T) -> &U,
+    vecs: &mut [&mut dyn Swappable],
+) {
+    let mut indexes: Vec<usize> = (0..a.len()).collect();
+
+    indexes.sort_by(|&i, &j| f(&a[i]).cmp(f(&a[j])));
+
+    for i in 0..indexes.len() {
+        while indexes[i] != i {
+            let target = indexes[i];
+            a.swap(i, target);
+            for v in vecs.iter_mut() {
+                v.swap_(i, target);
             }
-            assert_eq!(num, col_data.num);
+            indexes.swap(i, target);
         }
     }
 }
 
-impl Row {
-    pub fn iter(&self) -> impl Iterator<Item = (&SmolStr, &ValueAndClock)> {
-        self.map.iter()
+trait Swappable {
+    fn swap_(&mut self, i: usize, j: usize);
+}
+
+impl<T> Swappable for Vec<T> {
+    fn swap_(&mut self, i: usize, j: usize) {
+        self.swap(i, j)
     }
 }
