@@ -195,6 +195,10 @@ impl LwwDb {
         self.tables.iter()
     }
 
+    pub fn iter_tables_mut(&mut self) -> impl Iterator<Item = (&SmolStr, &mut LwwTable)> {
+        self.tables.iter_mut()
+    }
+
     fn next_id(&mut self) -> OpId {
         let lamport = self.oplog.next_lamport();
         OpId {
