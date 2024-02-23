@@ -105,7 +105,12 @@ impl LwwDb {
     pub fn export_updates(&self, from: VectorClock) -> Vec<u8> {
         let mut str_pool: Register<SmolStr> = Register::new();
         let mut peer_pool: Register<Peer> = Register::new();
-        let mut ans: Vec<EncodedOp> = Vec::new();
+        let mut table_en = DeltaRleEncoder::new();
+        let mut row_en = DeltaRleEncoder::new();
+        let mut col_en = DeltaRleEncoder::new();
+        let mut peer_en = DeltaRleEncoder::new();
+        let mut lamport_en = DeltaRleEncoder::new();
+        let mut values_en = Vec::new();
         for (id, op) in self.oplog.iter_from(from.clone()) {
             debug_assert!(!from.includes(id));
             match op {
@@ -122,67 +127,44 @@ impl LwwDb {
                         {
                             if !from.includes(id) {
                                 let col_name: SmolStr = col_name.into();
-                                ans.push(EncodedOp {
-                                    table: str_pool.register(table_name),
-                                    row: Some(str_pool.register(row_name)),
-                                    col: Some(str_pool.register(&col_name)),
-                                    value: value.clone(),
-                                    peer_idx: peer_pool.register(&id.peer),
-                                    lamport: id.lamport,
-                                });
+                                table_en.push(str_pool.register(table_name) as i64);
+                                row_en.push(str_pool.register(row_name) as i64 + 1);
+                                col_en.push(str_pool.register(&col_name) as i64 + 1);
+                                values_en.push(value.clone());
+                                peer_en.push(peer_pool.register(&id.peer) as i64);
+                                lamport_en.push(id.lamport as i64);
                             }
                         }
                     }
                 }
-                crate::oplog::Op::DeleteTable { table } => ans.push(EncodedOp {
-                    table: str_pool.register(table),
-                    row: None,
-                    col: None,
-                    value: Value::Deleted,
-                    peer_idx: peer_pool.register(&id.peer),
-                    lamport: id.lamport,
-                }),
-                crate::oplog::Op::DeleteRow { table, row } => ans.push(EncodedOp {
-                    table: str_pool.register(table),
-                    row: Some(str_pool.register(row)),
-                    col: None,
-                    value: Value::Deleted,
-                    peer_idx: peer_pool.register(&id.peer),
-                    lamport: id.lamport,
-                }),
+                crate::oplog::Op::DeleteTable { table } => {
+                    table_en.push(str_pool.register(table) as i64);
+                    row_en.push(0);
+                    col_en.push(0);
+                    values_en.push(Value::Deleted);
+                    peer_en.push(peer_pool.register(&id.peer) as i64);
+                    lamport_en.push(id.lamport as i64);
+                }
+                crate::oplog::Op::DeleteRow { table, row } => {
+                    table_en.push(str_pool.register(table) as i64);
+                    row_en.push(str_pool.register(row) as i64 + 1);
+                    col_en.push(0);
+                    values_en.push(Value::Deleted);
+                    peer_en.push(peer_pool.register(&id.peer) as i64);
+                    lamport_en.push(id.lamport as i64);
+                }
             }
-        }
-
-        ans.sort_by(|a, b| {
-            a.table
-                .cmp(&b.table)
-                .then_with(|| a.row.cmp(&b.row).then_with(|| a.col.cmp(&b.col)))
-        });
-
-        let mut table = DeltaRleEncoder::new();
-        let mut row = DeltaRleEncoder::new();
-        let mut col = DeltaRleEncoder::new();
-        let mut peer = DeltaRleEncoder::new();
-        let mut lamport = DeltaRleEncoder::new();
-        let mut value = Vec::with_capacity(ans.len());
-        for op in ans {
-            table.push(op.table as i64);
-            row.push(op.row.map(|x| x as i64 + 1).unwrap_or(0));
-            col.push(op.col.map(|x| x as i64 + 1).unwrap_or(0));
-            peer.push(op.peer_idx as i64);
-            lamport.push(op.lamport.into());
-            value.push(op.value);
         }
 
         let f = Final {
             str: str_pool.finish(),
             peers: peer_pool.finish(),
-            table: Cow::Owned(table.finish()),
-            row: Cow::Owned(row.finish()),
-            col: Cow::Owned(col.finish()),
-            value: Cow::Owned(postcard::to_allocvec(&value).unwrap()),
-            peer_idx: Cow::Owned(peer.finish()),
-            lamport: Cow::Owned(lamport.finish()),
+            table: Cow::Owned(table_en.finish()),
+            row: Cow::Owned(row_en.finish()),
+            col: Cow::Owned(col_en.finish()),
+            value: Cow::Owned(postcard::to_allocvec(&values_en).unwrap()),
+            peer_idx: Cow::Owned(peer_en.finish()),
+            lamport: Cow::Owned(lamport_en.finish()),
         };
 
         let ans = postcard::to_allocvec(&f).unwrap();

@@ -270,7 +270,7 @@ fn sort_vecs_based_on_first<T, U: Ord + ?Sized>(
 ) {
     let mut indexes: Vec<usize> = (0..a.len()).collect();
 
-    indexes.sort_by(|&i, &j| f(&a[i]).cmp(f(&a[j])));
+    indexes.sort_unstable_by(|&i, &j| f(&a[i]).cmp(f(&a[j])));
 
     for i in 0..indexes.len() {
         while indexes[i] != i {

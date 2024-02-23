@@ -3,9 +3,9 @@ use lww_table::LwwDb;
 pub fn main() {
     let mut db = lww_table::LwwDb::new();
     let start = std::time::Instant::now();
-    for i in 0..100_000 {
-        for j in 0..10 {
-            db.set("table", &i.to_string(), j.to_string().as_str(), i + j);
+    for j in 0..100 {
+        for i in 0..10_000 {
+            db.set("table", &i.to_string(), j.to_string().as_str(), i * j);
         }
     }
     println!("1m set: {:?}", start.elapsed());
