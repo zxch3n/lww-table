@@ -139,7 +139,7 @@ impl LwwDb {
                     col_name,
                     id,
                     value,
-                } in table.iter_row(row_name)
+                } in table.iter_row_with_id(row_name)
                 {
                     if !from.includes(id) {
                         let col_name: Arc<str> = col_name.into();

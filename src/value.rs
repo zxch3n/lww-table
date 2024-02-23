@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{fmt::Display, hash::Hasher};
 
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -13,6 +13,22 @@ pub enum Value {
     Null,
     Deleted,
 }
+
+impl std::hash::Hash for Value {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Value::Double(d) => d.to_bits().hash(state),
+            Value::I64(i) => i.hash(state),
+            Value::Str(s) => s.hash(state),
+            Value::True => true.hash(state),
+            Value::False => false.hash(state),
+            Value::Null => 0.hash(state),
+            Value::Deleted => 1.hash(state),
+        }
+    }
+}
+
+impl Eq for Value {}
 
 impl Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

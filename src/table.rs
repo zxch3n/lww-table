@@ -238,7 +238,18 @@ impl LwwTable {
             .collect();
     }
 
-    pub fn iter_row(&self, row: &str) -> impl Iterator<Item = RowValue> + '_ {
+    pub(crate) fn iter_row(&self, row: &str) -> impl Iterator<Item = (&str, &Value)> + '_ {
+        let idx = self.row_id_to_idx.get(row);
+        idx.map(|idx| {
+            self.cols
+                .iter()
+                .map(move |(col_name, col)| (col_name.as_str(), &col.value[*idx]))
+        })
+        .into_iter()
+        .flatten()
+    }
+
+    pub(crate) fn iter_row_with_id(&self, row: &str) -> impl Iterator<Item = RowValue> + '_ {
         let idx = self.row_id_to_idx.get(row);
         idx.map(|idx| {
             self.cols.iter().map(move |(col_name, col)| RowValue {
@@ -249,6 +260,12 @@ impl LwwTable {
         })
         .into_iter()
         .flatten()
+    }
+
+    pub(crate) fn get_cell(&self, row: &str, col: &str) -> Option<&Value> {
+        let row_idx = self.row_id_to_idx.get(row)?;
+        let col = self.cols.get(col)?;
+        col.value.get(*row_idx)
     }
 }
 

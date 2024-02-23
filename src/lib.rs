@@ -84,11 +84,30 @@ impl LwwDb {
         true
     }
 
+    pub fn get_cell(&self, table_str: &str, row: &str, col: &str) -> Option<&Value> {
+        self.tables
+            .get(table_str)
+            .and_then(|table| table.get_cell(row, col))
+    }
+
+    pub fn iter_row(
+        &self,
+        table_str: &str,
+        row: &str,
+    ) -> impl Iterator<Item = (&str, &Value)> + '_ {
+        self.tables
+            .get(table_str)
+            .map(|table| table.iter_row(row))
+            .into_iter()
+            .flatten()
+    }
+
     #[inline(always)]
     pub fn set(&mut self, table_str: &str, row: &str, col: &str, value: impl Into<Value>) {
         self.set_(table_str, row, col, value.into(), None)
     }
 
+    #[inline(always)]
     pub(crate) fn set_(
         &mut self,
         table_str: &str,
