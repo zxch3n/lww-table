@@ -223,18 +223,13 @@ impl LwwTable {
     }
 
     pub fn sort(&mut self) {
-        let mut vecs: Vec<&mut dyn Swappable> = self
-            .cols
-            .values_mut()
-            .flat_map(|c| {
-                [
-                    (&mut c.value) as &mut dyn Swappable,
-                    &mut c.lamport,
-                    &mut c.peer,
-                ]
-            })
-            .collect();
-        sort_vecs_based_on_first(&mut self.rows, |r| r.row_id.as_str(), &mut vecs);
+        let indexes = sort_vecs_based_on_first(&mut self.rows, |r| r.row_id.as_str());
+        for col in self.cols.values_mut() {
+            reorder_vec_by_indexes(&mut col.value, &indexes);
+            reorder_vec_by_indexes(&mut col.lamport, &indexes);
+            reorder_vec_by_indexes(&mut col.peer, &indexes);
+        }
+
         self.row_id_to_idx = self
             .rows
             .iter()
@@ -263,33 +258,30 @@ pub struct RowValue<'a> {
     pub value: &'a Value,
 }
 
-fn sort_vecs_based_on_first<T, U: Ord + ?Sized>(
-    a: &mut [T],
+fn sort_vecs_based_on_first<T: Clone, U: Ord + ?Sized>(
+    a: &mut Vec<T>,
     f: impl Fn(&T) -> &U,
-    vecs: &mut [&mut dyn Swappable],
-) {
+) -> Vec<usize> {
     let mut indexes: Vec<usize> = (0..a.len()).collect();
 
     indexes.sort_unstable_by(|&i, &j| f(&a[i]).cmp(f(&a[j])));
-
-    for i in 0..indexes.len() {
-        while indexes[i] != i {
-            let target = indexes[i];
-            a.swap(i, target);
-            for v in vecs.iter_mut() {
-                v.swap_(i, target);
-            }
-            indexes.swap(i, target);
-        }
-    }
+    reorder_vec_by_indexes(a, &indexes);
+    indexes
 }
 
-trait Swappable {
-    fn swap_(&mut self, i: usize, j: usize);
+fn reorder_vec_by_indexes<T: Clone>(a: &mut Vec<T>, indexes: &[usize]) {
+    let new_a: Vec<T> = indexes.iter().map(|x| a[*x].clone()).collect();
+    *a = new_a;
 }
 
-impl<T> Swappable for Vec<T> {
-    fn swap_(&mut self, i: usize, j: usize) {
-        self.swap(i, j)
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_sort() {
+        let mut v = vec![4, 1, 3, 2, 5, 7, 6, 0];
+        sort_vecs_based_on_first(&mut v, |x| x);
+        assert_eq!(v, vec![0, 1, 2, 3, 4, 5, 6, 7])
     }
 }

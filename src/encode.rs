@@ -286,14 +286,14 @@ mod test_encode_from {
         let mut new_db = LwwDb::new();
         new_db.import_updates(&data);
         assert!(
-            db.table_eq(&mut new_db),
+            db.check_eq(&mut new_db),
             "original: {}\nnew: {}",
             db,
             new_db
         );
         let mut c_db = LwwDb::new();
         c_db.import_updates(&new_db.export_updates(Default::default()));
-        assert!(db.table_eq(&mut c_db));
+        assert!(db.check_eq(&mut c_db));
     }
 
     #[test]
@@ -312,14 +312,14 @@ mod test_encode_from {
         // println!("{}", &db);
         // println!("{}", &new_db);
         assert!(
-            db.table_eq(&mut new_db),
+            db.check_eq(&mut new_db),
             "original: {}\nnew: {}",
             db,
             new_db
         );
         let mut c_db = LwwDb::new();
         c_db.import_updates(&new_db.export_updates(Default::default()));
-        assert!(db.table_eq(&mut c_db));
+        assert!(db.check_eq(&mut c_db));
     }
 
     #[test]
@@ -335,9 +335,9 @@ mod test_encode_from {
         let mut new_db = LwwDb::from_snapshot(&data);
         println!("{}", &db);
         println!("{}", &new_db);
-        assert!(db.table_eq(&mut new_db));
+        assert!(db.check_eq(&mut new_db));
         let mut c_db = LwwDb::new();
         c_db.import_updates(&new_db.export_updates(Default::default()));
-        assert!(db.table_eq(&mut c_db));
+        assert!(db.check_eq(&mut c_db));
     }
 }

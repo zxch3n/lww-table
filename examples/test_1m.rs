@@ -3,9 +3,9 @@ use lww_table::LwwDb;
 pub fn main() {
     let mut db = lww_table::LwwDb::new();
     let start = std::time::Instant::now();
-    for j in 0..100 {
-        for i in 0..10_000 {
-            db.set("table", &i.to_string(), j.to_string().as_str(), i * j);
+    for i in 0..100_000 {
+        for j in 0..10 {
+            db.set("table", &i.to_string(), j.to_string().as_str(), i + j);
         }
     }
     println!("1m set: {:?}", start.elapsed());
@@ -28,5 +28,5 @@ pub fn main() {
     let start = std::time::Instant::now();
     let mut new_db = LwwDb::from_snapshot(&data);
     println!("1m from_snapshot: {:?}", start.elapsed());
-    assert!(db.table_eq(&mut new_db));
+    assert!(db.check_eq(&mut new_db));
 }

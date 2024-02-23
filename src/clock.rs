@@ -19,7 +19,7 @@ impl OpId {
 }
 
 /// Inclusive range of [OpId].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct VectorClock {
     pub(crate) map: FxHashMap<Peer, Lamport>,
 }
@@ -55,5 +55,13 @@ impl VectorClock {
             Some(lamport) => *lamport >= op.lamport,
             None => false,
         }
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        postcard::to_allocvec(self).unwrap()
+    }
+
+    pub fn decode(encoded: &[u8]) -> Self {
+        postcard::from_bytes(encoded).unwrap()
     }
 }

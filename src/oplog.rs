@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, ops::Bound, sync::Arc};
 
 use fxhash::{FxHashMap, FxHashSet};
 use smol_str::SmolStr;
@@ -9,7 +9,7 @@ use crate::clock::{Lamport, OpId, Peer, VectorClock};
 pub(crate) struct OpLog {
     str_pool: FxHashSet<Arc<str>>,
     map: FxHashMap<Peer, BTreeMap<Lamport, Op>>,
-    vv: VectorClock,
+    vector_clock: VectorClock,
     max_lamport: Lamport,
 }
 
@@ -82,7 +82,7 @@ impl OpLogBuilder {
         OpLog {
             str_pool: self.str_pool,
             max_lamport: vv.iter().map(|(_, v)| *v).max().unwrap_or(0),
-            vv,
+            vector_clock: vv,
             map,
         }
     }
@@ -97,7 +97,7 @@ impl OpLog {
         self.max_lamport = self.max_lamport.max(lamport);
         let map = self.map.entry(peer).or_default();
         map.insert(lamport, Op::Update { table, row });
-        self.vv.extend_to_include(id);
+        self.vector_clock.extend_to_include(id);
     }
 
     pub(crate) fn record_delete_row(&mut self, id: OpId, table: SmolStr, row: SmolStr) {
@@ -108,7 +108,7 @@ impl OpLog {
         self.max_lamport = self.max_lamport.max(lamport);
         let map = self.map.entry(peer).or_default();
         map.insert(lamport, Op::DeleteRow { table, row });
-        self.vv.extend_to_include(id);
+        self.vector_clock.extend_to_include(id);
     }
 
     pub(crate) fn record_delete_table(&mut self, id: OpId, table: SmolStr) {
@@ -118,7 +118,7 @@ impl OpLog {
         self.max_lamport = self.max_lamport.max(lamport);
         let map = self.map.entry(peer).or_default();
         map.insert(lamport, Op::DeleteTable { table });
-        self.vv.extend_to_include(id);
+        self.vector_clock.extend_to_include(id);
     }
 
     pub(crate) fn next_lamport(&self) -> u32 {
@@ -131,14 +131,19 @@ impl OpLog {
     ) -> impl Iterator<Item = (OpId, &Op)> + '_ {
         self.map.iter().flat_map(move |(peer, map)| {
             let start = *from.get(peer).unwrap_or(&0);
-            map.range(start..).map(move |(lamport, op)| {
-                let id = OpId {
-                    peer: *peer,
-                    lamport: *lamport,
-                };
+            map.range((Bound::Excluded(start), Bound::Unbounded))
+                .map(move |(lamport, op)| {
+                    let id = OpId {
+                        peer: *peer,
+                        lamport: *lamport,
+                    };
 
-                (id, op)
-            })
+                    (id, op)
+                })
         })
+    }
+
+    pub(crate) fn version(&self) -> &VectorClock {
+        &self.vector_clock
     }
 }

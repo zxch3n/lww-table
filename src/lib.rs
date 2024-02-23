@@ -1,18 +1,8 @@
-//! # Lightweight last-write-wins CRDT table
-//!
-//! - In-memory
-//! - Support delta updates
-//! - Can be used in WASM
-//! - Can be used in real-time collaborative applications
-//! - Does not support custom ordering of rows or columns
-//! - Small overhead
-//! - No support for indexes, joins, or complex queries
-//! - No support for transactions
-//! - Can be used like a KV store
+#![doc = include_str!("../README.md")]
 
 use std::fmt::Display;
 
-use clock::{OpId, Peer};
+use clock::Peer;
 use event::Event;
 use fxhash::FxHashMap;
 use oplog::OpLog;
@@ -26,6 +16,8 @@ mod event;
 mod oplog;
 pub(crate) mod table;
 pub(crate) mod value;
+
+pub use clock::{OpId, VectorClock};
 
 #[derive(Debug, Clone)]
 pub struct LwwDb {
@@ -72,7 +64,7 @@ impl LwwDb {
         self.peer = peer;
     }
 
-    pub fn table_eq(&mut self, other: &mut Self) -> bool {
+    pub fn check_eq(&mut self, other: &mut Self) -> bool {
         if self.tables.len() != other.tables.len() {
             return false;
         }
@@ -198,5 +190,9 @@ impl LwwDb {
 
     pub fn subscribe(&mut self, _listener: Box<dyn Fn(&Event)>) {
         todo!()
+    }
+
+    pub fn version(&self) -> &VectorClock {
+        self.oplog.version()
     }
 }
