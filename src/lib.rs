@@ -102,12 +102,10 @@ impl LwwDb {
             .flatten()
     }
 
-    #[inline(always)]
     pub fn set(&mut self, table_str: &str, row: &str, col: &str, value: impl Into<Value>) {
         self.set_(table_str, row, col, value.into(), None)
     }
 
-    #[inline(always)]
     pub(crate) fn set_(
         &mut self,
         table_str: &str,
